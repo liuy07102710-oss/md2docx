@@ -9,7 +9,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
-DEFAULT_REFERENCE = SKILL_DIR / "templates" / "template_标题不编号-列表第二行顶格.docx"
+DEFAULT_REFERENCE = SKILL_DIR / "templates" / "template_期刊论文.docx"
 DEFAULT_FILTER = SKILL_DIR / "markdown-to-docx.lua"
 TABLE_STYLE_NORMALIZER = SCRIPT_DIR / "normalize_table_cell_styles.py"
 
@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--reference-doc",
         dest="reference",
         default=str(DEFAULT_REFERENCE),
-        help="Reference DOCX template. Default: templates/template_标题不编号-列表第二行顶格.docx",
+        help="Reference DOCX template. Default: templates/template_期刊论文.docx",
     )
     parser.add_argument(
         "-f",
