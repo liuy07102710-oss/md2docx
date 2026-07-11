@@ -108,6 +108,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     output_path = Path(args.output).expanduser() if args.output else input_path.with_suffix(".docx")
+    resource_path = input_path.resolve().parent
     reference_path = resolve_resource(args.reference)
     lua_filter_path = resolve_resource(args.lua_filter)
 
@@ -131,12 +132,23 @@ def main(argv: list[str]) -> int:
                 str(reference_path),
                 "--lua-filter",
                 str(lua_filter_path),
+                "--resource-path",
+                str(resource_path),
                 *extra_args,
             ]
         )
     else:
         html = run(
-            ["pandoc", str(input_path), "-f", args.from_format, "-t", "html"],
+            [
+                "pandoc",
+                str(input_path),
+                "-f",
+                args.from_format,
+                "-t",
+                "html",
+                "--resource-path",
+                str(resource_path),
+            ],
             capture_stdout=True,
         ).stdout
         run(
@@ -150,6 +162,8 @@ def main(argv: list[str]) -> int:
                 str(reference_path),
                 "--lua-filter",
                 str(lua_filter_path),
+                "--resource-path",
+                str(resource_path),
                 *extra_args,
             ],
             stdin=html,

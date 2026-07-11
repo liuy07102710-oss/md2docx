@@ -355,82 +355,173 @@ function Get-ItemData {
   }
 }
 
-function Get-CitationKeysFromXml {
-  param([string]$DocumentXml)
+function New-WordXmlDocument {
+  param([string]$Xml)
 
-  $keys = New-Object System.Collections.Generic.HashSet[string]
+  $document = New-Object System.Xml.XmlDocument
+  $document.PreserveWhitespace = $true
+  $document.LoadXml($Xml)
+  return $document
+}
 
-  foreach ($match in [regex]::Matches($DocumentXml, '@([A-Za-z0-9_.:\-]+)')) {
-    [void]$keys.Add($match.Groups[1].Value)
+function Get-WordNamespaceManager {
+  param([System.Xml.XmlDocument]$Document)
+
+  $manager = New-Object System.Xml.XmlNamespaceManager($Document.NameTable)
+  $manager.AddNamespace("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
+  Write-Output -NoEnumerate $manager
+}
+
+function Get-EligibleTextEntries {
+  param(
+    [System.Xml.XmlNode]$Paragraph,
+    [System.Xml.XmlNamespaceManager]$NamespaceManager
+  )
+
+  $entries = New-Object System.Collections.Generic.List[object]
+  $offset = 0
+  $fieldDepth = 0
+  foreach ($run in @($Paragraph.SelectNodes(".//w:r", $NamespaceManager))) {
+    $beginCount = @($run.SelectNodes('./w:fldChar[@w:fldCharType="begin"]', $NamespaceManager)).Count
+    $endCount = @($run.SelectNodes('./w:fldChar[@w:fldCharType="end"]', $NamespaceManager)).Count
+    $fieldDepth += $beginCount
+
+    $insideSimpleField = $null -ne $run.SelectSingleNode("ancestor::w:fldSimple", $NamespaceManager)
+    if ($fieldDepth -eq 0 -and -not $insideSimpleField) {
+      foreach ($textNode in @($run.SelectNodes("./w:t", $NamespaceManager))) {
+        $text = [string]$textNode.InnerText
+        if ($text.Length -eq 0) {
+          continue
+        }
+        $entries.Add([pscustomobject]@{
+          Run = $run
+          TextNode = $textNode
+          Start = $offset
+          Length = $text.Length
+          Text = $text
+        })
+        $offset += $text.Length
+      }
+    }
+
+    $fieldDepth = [Math]::Max(0, $fieldDepth - $endCount)
   }
 
+  return $entries.ToArray()
+}
+
+function Get-CombinedEntryText {
+  param([object[]]$Entries)
+
+  return (($Entries | ForEach-Object { $_.Text }) -join "")
+}
+
+function Get-CitationMarkerMatches {
+  param([string]$Text)
+
+  $pattern = '@[A-Za-z0-9_.:\-]+\s+\[[^\]]*@[^\]]*\]|\[[^\]]*@[^\]]*\]|@[A-Za-z0-9_.:\-]+'
+  return @([regex]::Matches($Text, $pattern))
+}
+
+function Get-CitationKeysFromDocument {
+  param(
+    [System.Xml.XmlDocument]$Document,
+    [System.Xml.XmlNamespaceManager]$NamespaceManager
+  )
+
+  $keys = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($paragraph in @($Document.SelectNodes("//w:p", $NamespaceManager))) {
+    $text = Get-CombinedEntryText -Entries @(Get-EligibleTextEntries -Paragraph $paragraph -NamespaceManager $NamespaceManager)
+    foreach ($match in [regex]::Matches($text, '@([A-Za-z0-9_.:\-]+)')) {
+      [void]$keys.Add($match.Groups[1].Value)
+    }
+  }
   return @($keys)
 }
 
-function Get-TextRunMatches {
-  param([string]$Xml)
-
-  return @([regex]::Matches($Xml, '<w:r><w:t(?: xml:space="preserve")?>(.*?)</w:t></w:r>'))
-}
-
-function Get-CombinedRunText {
+function Get-StructurallyUnresolvedMarkers {
   param(
-    [object[]]$RunMatches,
-    [int]$StartIndex,
-    [int]$RunCount
+    [System.Xml.XmlDocument]$Document,
+    [System.Xml.XmlNamespaceManager]$NamespaceManager
   )
 
-  $builder = New-Object System.Text.StringBuilder
-  for ($offset = 0; $offset -lt $RunCount; $offset++) {
-    [void]$builder.Append($RunMatches[$StartIndex + $offset].Groups[1].Value)
+  $unresolved = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($paragraph in @($Document.SelectNodes("//w:p", $NamespaceManager))) {
+    $text = Get-CombinedEntryText -Entries @(Get-EligibleTextEntries -Paragraph $paragraph -NamespaceManager $NamespaceManager)
+    foreach ($marker in @(Get-CitationMarkerMatches -Text $text)) {
+      $markerKeys = @([regex]::Matches($marker.Value, '@([A-Za-z0-9_.:\-]+)') | ForEach-Object { $_.Groups[1].Value })
+      $containsMissingKey = $false
+      foreach ($key in $markerKeys) {
+        if ($script:MissingCitekeys.Contains($key)) {
+          $containsMissingKey = $true
+          break
+        }
+      }
+      if (-not $containsMissingKey) {
+        [void]$unresolved.Add($marker.Value)
+      }
+    }
   }
-
-  return $builder.ToString()
+  return @($unresolved)
 }
 
-function Test-RunSpanIsAdjacent {
+function Get-RunPropertiesXml {
   param(
-    [string]$Xml,
-    [object[]]$RunMatches,
-    [int]$StartIndex,
-    [int]$RunCount
+    [System.Xml.XmlNode]$Run,
+    [System.Xml.XmlNamespaceManager]$NamespaceManager
   )
 
-  for ($offset = 0; $offset -lt ($RunCount - 1); $offset++) {
-    $current = $RunMatches[$StartIndex + $offset]
-    $next = $RunMatches[$StartIndex + $offset + 1]
-    $betweenStart = $current.Index + $current.Length
-    $betweenLength = $next.Index - $betweenStart
-    if ($betweenLength -lt 0) {
-      return $false
-    }
-
-    $between = $Xml.Substring($betweenStart, $betweenLength)
-    if ($between.Length -gt 0) {
-      return $false
-    }
+  $properties = $Run.SelectSingleNode("./w:rPr", $NamespaceManager)
+  if ($null -eq $properties) {
+    return ""
   }
+  return $properties.OuterXml
+}
 
-  return $true
+function New-RunWithText {
+  param(
+    [System.Xml.XmlDocument]$Document,
+    [string]$Text,
+    [string]$RunPropertiesXml = ""
+  )
+
+  $spaceAttribute = if ($Text -match '^\s|\s$|  ') { ' xml:space="preserve"' } else { "" }
+  $fragment = New-Object System.Xml.XmlDocument
+  $fragment.PreserveWhitespace = $true
+  $fragment.LoadXml('<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' + $RunPropertiesXml + '<w:t' + $spaceAttribute + '>' + (Escape-XmlText -Text $Text) + '</w:t></w:r>')
+  return $Document.ImportNode($fragment.DocumentElement, $true)
+}
+
+function Convert-FieldXmlToNodes {
+  param(
+    [System.Xml.XmlDocument]$Document,
+    [string]$FieldXml
+  )
+
+  $fragment = New-Object System.Xml.XmlDocument
+  $fragment.PreserveWhitespace = $true
+  $fragment.LoadXml('<root xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' + $FieldXml + '</root>')
+  return @($fragment.DocumentElement.ChildNodes | ForEach-Object { $Document.ImportNode($_, $true) })
 }
 
 function Get-ReplacementFieldXmlForMarker {
   param(
     [string]$Marker,
-    [hashtable]$CitationMap
+    [hashtable]$CitationMap,
+    [string]$RunPropertiesXml = ""
   )
 
   try {
     if ($Marker -match '^@([A-Za-z0-9_.:\-]+)\s+\[(.+)\]$') {
-      return Convert-MixedCitationMarkerToFieldXml -Marker $Marker -CitationMap $CitationMap
+      return Convert-MixedCitationMarkerToFieldXml -Marker $Marker -CitationMap $CitationMap -RunPropertiesXml $RunPropertiesXml
     }
 
     if ($Marker -match '^\[(?:.*@.*)\]$') {
-      return Convert-CitationMarkerToFieldXml -Marker $Marker -CitationMap $CitationMap
+      return Convert-CitationMarkerToFieldXml -Marker $Marker -CitationMap $CitationMap -RunPropertiesXml $RunPropertiesXml
     }
 
     if ($Marker -match '^@([A-Za-z0-9_.:\-]+)$') {
-      return Convert-NarrativeCitationToFieldXml -Citekey $matches[1] -CitationMap $CitationMap
+      return Convert-NarrativeCitationToFieldXml -Citekey $matches[1] -CitationMap $CitationMap -RunPropertiesXml $RunPropertiesXml
     }
   }
   catch {
@@ -446,86 +537,91 @@ function Get-ReplacementFieldXmlForMarker {
   return $null
 }
 
-function Replace-CitationRunsInParagraph {
+function Replace-CitationMarkerInParagraph {
   param(
-    [string]$ParagraphXml,
+    [System.Xml.XmlNode]$Paragraph,
+    [System.Text.RegularExpressions.Match]$MarkerMatch,
     [hashtable]$CitationMap
   )
 
-  $runMatches = @(Get-TextRunMatches -Xml $ParagraphXml)
-  if ($runMatches.Count -eq 0) {
-    return $ParagraphXml
+  $document = $Paragraph.OwnerDocument
+  $namespaceManager = Get-WordNamespaceManager -Document $document
+  $entries = @(Get-EligibleTextEntries -Paragraph $Paragraph -NamespaceManager $namespaceManager)
+  $matchStart = $MarkerMatch.Index
+  $matchEnd = $MarkerMatch.Index + $MarkerMatch.Length
+  $affected = @($entries | Where-Object { $_.Start -lt $matchEnd -and ($_.Start + $_.Length) -gt $matchStart })
+  if ($affected.Count -eq 0) {
+    return $false
   }
 
-  $result = New-Object System.Text.StringBuilder
-  $cursor = 0
-  $index = 0
+  $first = $affected[0]
+  $last = $affected[-1]
+  $parent = $first.Run.ParentNode
+  if (@($affected | Where-Object { -not [object]::ReferenceEquals($_.Run.ParentNode, $parent) }).Count -gt 0) {
+    return $false
+  }
 
-  while ($index -lt $runMatches.Count) {
-    $matched = $false
+  $firstRunEntries = @($entries | Where-Object { [object]::ReferenceEquals($_.Run, $first.Run) })
+  $lastRunEntries = @($entries | Where-Object { [object]::ReferenceEquals($_.Run, $last.Run) })
+  $firstRunStart = $firstRunEntries[0].Start
+  $lastRunStart = $lastRunEntries[0].Start
+  $firstRunText = Get-CombinedEntryText -Entries $firstRunEntries
+  $lastRunText = Get-CombinedEntryText -Entries $lastRunEntries
+  $prefixLength = $matchStart - $firstRunStart
+  $suffixStart = $matchEnd - $lastRunStart
+  $prefix = if ($prefixLength -gt 0) { $firstRunText.Substring(0, $prefixLength) } else { "" }
+  $suffix = if ($suffixStart -lt $lastRunText.Length) { $lastRunText.Substring($suffixStart) } else { "" }
+  $firstProperties = Get-RunPropertiesXml -Run $first.Run -NamespaceManager $namespaceManager
+  $lastProperties = Get-RunPropertiesXml -Run $last.Run -NamespaceManager $namespaceManager
+  $fieldXml = Get-ReplacementFieldXmlForMarker -Marker $MarkerMatch.Value -CitationMap $CitationMap -RunPropertiesXml $firstProperties
+  if ($null -eq $fieldXml) {
+    return $false
+  }
 
-    $maxSpanLength = [Math]::Min(12, $runMatches.Count - $index)
-    foreach ($spanLength in ($maxSpanLength..1)) {
-      if (($index + $spanLength) -gt $runMatches.Count) {
-        continue
-      }
-      if (-not (Test-RunSpanIsAdjacent -Xml $ParagraphXml -RunMatches $runMatches -StartIndex $index -RunCount $spanLength)) {
-        continue
-      }
+  if ($prefix) {
+    [void]$parent.InsertBefore((New-RunWithText -Document $document -Text $prefix -RunPropertiesXml $firstProperties), $first.Run)
+  }
+  foreach ($node in @(Convert-FieldXmlToNodes -Document $document -FieldXml $fieldXml)) {
+    [void]$parent.InsertBefore($node, $first.Run)
+  }
+  if ($suffix) {
+    [void]$parent.InsertBefore((New-RunWithText -Document $document -Text $suffix -RunPropertiesXml $lastProperties), $first.Run)
+  }
 
-      $combinedText = Get-CombinedRunText -RunMatches $runMatches -StartIndex $index -RunCount $spanLength
-      $fieldXml = Get-ReplacementFieldXmlForMarker -Marker $combinedText -CitationMap $CitationMap
-      if ($null -eq $fieldXml) {
-        continue
-      }
-
-      $start = $runMatches[$index].Index
-      $end = $runMatches[$index + $spanLength - 1].Index + $runMatches[$index + $spanLength - 1].Length
-      [void]$result.Append($ParagraphXml.Substring($cursor, $start - $cursor))
-      [void]$result.Append($fieldXml)
-      $cursor = $end
-      $index += $spanLength
-      $matched = $true
-      break
+  $runs = New-Object System.Collections.Generic.List[System.Xml.XmlNode]
+  foreach ($entry in $affected) {
+    if (-not $runs.Contains($entry.Run)) {
+      $runs.Add($entry.Run)
     }
-
-    if (-not $matched) {
-      $run = $runMatches[$index]
-      $end = $run.Index + $run.Length
-      [void]$result.Append($ParagraphXml.Substring($cursor, $end - $cursor))
-      $cursor = $end
-      $index += 1
-    }
   }
-
-  if ($cursor -lt $ParagraphXml.Length) {
-    [void]$result.Append($ParagraphXml.Substring($cursor))
+  foreach ($run in $runs) {
+    [void]$run.ParentNode.RemoveChild($run)
   }
-
-  return $result.ToString()
+  return $true
 }
 
-function Replace-CitationRunsInDocumentXml {
+function Replace-CitationRunsInDocument {
   param(
-    [string]$DocumentXml,
+    [System.Xml.XmlDocument]$Document,
     [hashtable]$CitationMap
   )
 
-  return [regex]::Replace(
-    $DocumentXml,
-    '<w:p\b[^>]*>.*?</w:p>',
-    [System.Text.RegularExpressions.MatchEvaluator]{
-      param($match)
-      return Replace-CitationRunsInParagraph -ParagraphXml $match.Value -CitationMap $CitationMap
-    },
-    [System.Text.RegularExpressions.RegexOptions]::Singleline
-  )
+  $namespaceManager = Get-WordNamespaceManager -Document $Document
+  foreach ($paragraph in @($Document.SelectNodes("//w:p", $namespaceManager))) {
+    $entries = @(Get-EligibleTextEntries -Paragraph $paragraph -NamespaceManager $namespaceManager)
+    $text = Get-CombinedEntryText -Entries $entries
+    $markerMatches = @(Get-CitationMarkerMatches -Text $text)
+    for ($index = $markerMatches.Count - 1; $index -ge 0; $index--) {
+      [void](Replace-CitationMarkerInParagraph -Paragraph $paragraph -MarkerMatch $markerMatches[$index] -CitationMap $CitationMap)
+    }
+  }
 }
 
 function New-CitationFieldXml {
   param(
     [string]$VisibleText,
-    [object[]]$CitationItems
+    [object[]]$CitationItems,
+    [string]$RunPropertiesXml = ""
   )
 
   $payload = [ordered]@{
@@ -544,7 +640,7 @@ function New-CitationFieldXml {
     '<w:r><w:fldChar w:fldCharType="begin"/></w:r>',
     ('<w:r><w:instrText xml:space="preserve">' + (Escape-XmlText -Text $fieldCode) + '</w:instrText></w:r>'),
     '<w:r><w:fldChar w:fldCharType="separate"/></w:r>',
-    ('<w:r><w:t>' + (Escape-XmlText -Text $VisibleText) + '</w:t></w:r>'),
+    ('<w:r>' + $RunPropertiesXml + '<w:t>' + (Escape-XmlText -Text $VisibleText) + '</w:t></w:r>'),
     '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
   ) -join ""
 }
@@ -572,7 +668,8 @@ function Get-CitationMap {
 function Convert-CitationMarkerToFieldXml {
   param(
     [string]$Marker,
-    [hashtable]$CitationMap
+    [hashtable]$CitationMap,
+    [string]$RunPropertiesXml = ""
   )
 
   $inner = $Marker.Trim('[', ']')
@@ -600,13 +697,14 @@ function Convert-CitationMarkerToFieldXml {
 
   $plainCitation = "(" + ($displayParts -join "; ") + ")"
   Register-ConvertedCitekeys -Citekeys $convertedCitekeys.ToArray()
-  return New-CitationFieldXml -VisibleText $plainCitation -CitationItems $citationItems
+  return New-CitationFieldXml -VisibleText $plainCitation -CitationItems $citationItems -RunPropertiesXml $RunPropertiesXml
 }
 
 function Convert-NarrativeCitationToFieldXml {
   param(
     [string]$Citekey,
-    [hashtable]$CitationMap
+    [hashtable]$CitationMap,
+    [string]$RunPropertiesXml = ""
   )
 
   if (-not $CitationMap.ContainsKey($Citekey)) {
@@ -616,13 +714,14 @@ function Convert-NarrativeCitationToFieldXml {
   $item = $CitationMap[$Citekey]
   $displayText = Get-NarrativeCitationDisplayText -Item $item
   Register-ConvertedCitekeys -Citekeys @($Citekey)
-  return New-CitationFieldXml -VisibleText $displayText -CitationItems @((New-CitationItemPayload -Item $item))
+  return New-CitationFieldXml -VisibleText $displayText -CitationItems @((New-CitationItemPayload -Item $item)) -RunPropertiesXml $RunPropertiesXml
 }
 
 function Convert-MixedCitationMarkerToFieldXml {
   param(
     [string]$Marker,
-    [hashtable]$CitationMap
+    [hashtable]$CitationMap,
+    [string]$RunPropertiesXml = ""
   )
 
   if ($Marker -notmatch '^@([A-Za-z0-9_.:\-]+)\s+\[(.+)\]$') {
@@ -665,7 +764,7 @@ function Convert-MixedCitationMarkerToFieldXml {
   }
 
   Register-ConvertedCitekeys -Citekeys $convertedCitekeys.ToArray()
-  return New-CitationFieldXml -VisibleText $visibleText -CitationItems $citationItems
+  return New-CitationFieldXml -VisibleText $visibleText -CitationItems $citationItems -RunPropertiesXml $RunPropertiesXml
 }
 
 function Ensure-ParentDirectory {
@@ -735,7 +834,9 @@ try {
 
     $documentXmlPath = Join-Path $workDir "word/document.xml"
     $documentXml = [System.IO.File]::ReadAllText((Resolve-Path $documentXmlPath), $utf8NoBom)
-    $citekeys = @(Get-CitationKeysFromXml -DocumentXml $documentXml)
+    $wordDocument = New-WordXmlDocument -Xml $documentXml
+    $namespaceManager = Get-WordNamespaceManager -Document $wordDocument
+    $citekeys = @(Get-CitationKeysFromDocument -Document $wordDocument -NamespaceManager $namespaceManager)
 
     if ($citekeys.Count -eq 0) {
       throw "No citation markers like [@citekey] were found in word/document.xml"
@@ -743,15 +844,19 @@ try {
 
     $citationMap = Get-CitationMap -Citekeys $citekeys
 
-    $updatedXml = Replace-CitationRunsInDocumentXml -DocumentXml $documentXml -CitationMap $citationMap
+    Replace-CitationRunsInDocument -Document $wordDocument -CitationMap $citationMap
     $missingCitekeys = @($script:MissingCitekeys | Sort-Object)
     $hasMissingCitekeys = $missingCitekeys.Count -gt 0
+    $structurallyUnresolved = @(Get-StructurallyUnresolvedMarkers -Document $wordDocument -NamespaceManager $namespaceManager)
 
-    if ($updatedXml -eq $documentXml -and -not $hasMissingCitekeys) {
+    if ($script:ConvertedCitationKeyOccurrences -eq 0 -and -not $hasMissingCitekeys) {
       throw "Citation markers were found but no replacements were applied"
     }
+    if ($structurallyUnresolved.Count -gt 0) {
+      throw "Citation markers remain unconverted: $($structurallyUnresolved -join ', ')"
+    }
 
-    [System.IO.File]::WriteAllText((Resolve-Path $documentXmlPath), $updatedXml, $utf8NoBom)
+    [System.IO.File]::WriteAllText((Resolve-Path $documentXmlPath), $wordDocument.OuterXml, $utf8NoBom)
 
     Remove-ExistingOutputDocx -Path $outputDocxPath
 

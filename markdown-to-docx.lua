@@ -70,11 +70,11 @@ end
 
 for _, m in ipairs(modules) do
 	local ok, ret = pcall(require, m)
-	if ok then
-		append_filter(ret, m)
-	else
-		io.stderr:write(string.format('[markdown-to-docx] 警告: 加载模块 %s 失败: %s\n', m, ret))
+	if not ok then
+		io.stderr:write(string.format('[markdown-to-docx] 加载必需模块 %s 失败: %s\n', m, ret))
+		os.exit(1)
 	end
+	append_filter(ret, m)
 end
 
 return filters
