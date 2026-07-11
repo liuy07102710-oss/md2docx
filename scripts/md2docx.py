@@ -156,6 +156,7 @@ def main(argv: list[str]) -> int:
         )
 
     normalize_table_styles(output_path)
+    print(f"Step 1 complete: Markdown converted to DOCX -> {output_path}")
 
     return 0
 

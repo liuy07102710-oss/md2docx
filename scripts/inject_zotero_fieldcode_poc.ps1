@@ -19,7 +19,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$script:BbtEndpoint = if ($env:MD2DOCX_BBT_ENDPOINT) { $env:MD2DOCX_BBT_ENDPOINT } else { "http://127.0.0.1:23119/better-bibtex/json-rpc" }
 $script:MissingCitekeys = New-Object System.Collections.Generic.HashSet[string]
+$script:ConvertedCitationKeyOccurrences = 0
+$script:ConvertedReferenceKeys = New-Object System.Collections.Generic.HashSet[string]
 
 function Invoke-BbtJsonRpc {
   param(
@@ -27,8 +30,10 @@ function Invoke-BbtJsonRpc {
     [object[]]$Params
   )
 
-  $endpoint = "http://127.0.0.1:23119/better-bibtex/json-rpc"
+  $endpoint = $script:BbtEndpoint
   $tmp = Join-Path $env:TEMP ("bbt-" + [guid]::NewGuid().ToString() + ".json")
+  $stdoutPath = Join-Path $env:TEMP ("bbt-stdout-" + [guid]::NewGuid().ToString() + ".log")
+  $stderrPath = Join-Path $env:TEMP ("bbt-stderr-" + [guid]::NewGuid().ToString() + ".log")
   try {
     $request = @{
       jsonrpc = "2.0"
@@ -37,58 +42,88 @@ function Invoke-BbtJsonRpc {
       id = 1
     } | ConvertTo-Json -Depth 20 -Compress
 
-    Set-Content -LiteralPath $tmp -Value $request -NoNewline -Encoding utf8
-    $responseText = & curl.exe --noproxy "*" -sS $endpoint `
-      -H "Content-Type: application/json" `
-      -H "Accept: application/json" `
-      --data-binary "@$tmp" 2>&1
-    $curlExitCode = $LASTEXITCODE
+    [System.IO.File]::WriteAllText($tmp, $request, (New-Object System.Text.UTF8Encoding($false)))
+    $curlProcess = Start-Process `
+      -FilePath "curl.exe" `
+      -ArgumentList @(
+        "--noproxy", "*",
+        "-sS", $endpoint,
+        "-H", '"Content-Type: application/json"',
+        "-H", '"Accept: application/json"',
+        "--data-binary", ('"@' + $tmp + '"')
+      ) `
+      -NoNewWindow `
+      -Wait `
+      -PassThru `
+      -RedirectStandardOutput $stdoutPath `
+      -RedirectStandardError $stderrPath
+    $curlExitCode = $curlProcess.ExitCode
+    $responseText = if (Test-Path -LiteralPath $stdoutPath) {
+      [System.IO.File]::ReadAllText($stdoutPath, [System.Text.Encoding]::UTF8)
+    }
+    else {
+      ""
+    }
 
     if ($curlExitCode -ne 0) {
+      $stderrText = if (Test-Path -LiteralPath $stderrPath) {
+        [System.IO.File]::ReadAllText($stderrPath, [System.Text.Encoding]::UTF8)
+      }
+      else {
+        ""
+      }
       throw @(
-        "Failed to connect to Better BibTeX local JSON-RPC.",
+        "Step 2 failed: could not connect to Better BibTeX local JSON-RPC.",
         "Endpoint: $endpoint",
         "Check that Zotero is running, Better BibTeX is installed, and the local endpoint is available.",
-        "curl: $responseText"
+        "Request error: $stderrText"
       ) -join [Environment]::NewLine
     }
-
-    if (-not $responseText) {
-      throw @(
-        "Better BibTeX local JSON-RPC returned an empty response.",
-        "Endpoint: $endpoint"
-      ) -join [Environment]::NewLine
-    }
-
-    try {
-      $response = $responseText | ConvertFrom-Json
-    }
-    catch {
-      throw @(
-        "Better BibTeX local JSON-RPC returned invalid JSON.",
-        "Endpoint: $endpoint",
-        "Response: $responseText"
-      ) -join [Environment]::NewLine
-    }
-
-    if ($null -eq $response) {
-      throw @(
-        "Better BibTeX local JSON-RPC returned no usable response object.",
-        "Endpoint: $endpoint"
-      ) -join [Environment]::NewLine
-    }
-
-    if ($response.PSObject.Properties.Name -contains "error" -and $null -ne $response.error) {
-      throw "Better BibTeX JSON-RPC error: $($response.error.message)"
-    }
-
-    return $response.result
   }
   finally {
     if (Test-Path -LiteralPath $tmp) {
       Remove-Item -LiteralPath $tmp -Force
     }
+    if (Test-Path -LiteralPath $stdoutPath) {
+      Remove-Item -LiteralPath $stdoutPath -Force
+    }
+    if (Test-Path -LiteralPath $stderrPath) {
+      Remove-Item -LiteralPath $stderrPath -Force
+    }
   }
+
+  if (-not $responseText) {
+    throw @(
+      "Better BibTeX local JSON-RPC returned an empty response.",
+      "Endpoint: $endpoint"
+    ) -join [Environment]::NewLine
+  }
+
+  try {
+    $response = $responseText | ConvertFrom-Json
+  }
+  catch {
+    $responsePreviewLength = [Math]::Min(200, $responseText.Length)
+    $responsePreview = $responseText.Substring(0, $responsePreviewLength)
+    throw @(
+      "Better BibTeX local JSON-RPC returned invalid JSON.",
+      "Endpoint: $endpoint",
+      "Response preview: $responsePreview"
+    ) -join [Environment]::NewLine
+  }
+
+  if ($null -eq $response) {
+    throw @(
+      "Better BibTeX local JSON-RPC returned no usable response object.",
+      "Endpoint: $endpoint"
+    ) -join [Environment]::NewLine
+  }
+
+  if ($response.PSObject.Properties.Name -contains "error" -and $null -ne $response.error) {
+    throw "Better BibTeX JSON-RPC error: $($response.error.message)"
+  }
+
+  return $response.result
 }
 
 function Escape-XmlText {
@@ -262,6 +297,19 @@ function Get-NormalCitationPartDisplayText {
   }
 
   return $text
+}
+
+function Register-ConvertedCitekeys {
+  param([string[]]$Citekeys)
+
+  foreach ($citekey in $Citekeys) {
+    if (-not $citekey) {
+      continue
+    }
+
+    $script:ConvertedCitationKeyOccurrences += 1
+    [void]$script:ConvertedReferenceKeys.Add($citekey)
+  }
 }
 
 function New-CitationItemPayload {
@@ -536,6 +584,7 @@ function Convert-CitationMarkerToFieldXml {
 
   $citationItems = @()
   $displayParts = New-Object System.Collections.Generic.List[string]
+  $convertedCitekeys = New-Object System.Collections.Generic.List[string]
 
   foreach ($part in $parts) {
     $citekey = $part.Citekey
@@ -546,9 +595,11 @@ function Convert-CitationMarkerToFieldXml {
     $item = $CitationMap[$citekey]
     $displayParts.Add((Get-NormalCitationPartDisplayText -Item $item -Prefix $part.Prefix -Suffix $part.Suffix))
     $citationItems += (New-CitationItemPayload -Item $item -Prefix $part.Prefix -Suffix $part.Suffix)
+    $convertedCitekeys.Add($citekey)
   }
 
   $plainCitation = "(" + ($displayParts -join "; ") + ")"
+  Register-ConvertedCitekeys -Citekeys $convertedCitekeys.ToArray()
   return New-CitationFieldXml -VisibleText $plainCitation -CitationItems $citationItems
 }
 
@@ -564,6 +615,7 @@ function Convert-NarrativeCitationToFieldXml {
 
   $item = $CitationMap[$Citekey]
   $displayText = Get-NarrativeCitationDisplayText -Item $item
+  Register-ConvertedCitekeys -Citekeys @($Citekey)
   return New-CitationFieldXml -VisibleText $displayText -CitationItems @((New-CitationItemPayload -Item $item))
 }
 
@@ -588,9 +640,11 @@ function Convert-MixedCitationMarkerToFieldXml {
   $narrativeAuthorText = Get-NarrativeAuthorDisplayText -Item $narrativeItem
   $parentheticalParts = New-Object System.Collections.Generic.List[string]
   $citationItems = @()
+  $convertedCitekeys = New-Object System.Collections.Generic.List[string]
 
   $parentheticalParts.Add((Get-IssuedYear -Item $narrativeItem))
   $citationItems += (New-CitationItemPayload -Item $narrativeItem)
+  $convertedCitekeys.Add($narrativeKey)
 
   foreach ($part in (Parse-BracketCitationParts -InnerText $inner)) {
     if (-not $CitationMap.ContainsKey($part.Citekey)) {
@@ -600,6 +654,7 @@ function Convert-MixedCitationMarkerToFieldXml {
     $item = $CitationMap[$part.Citekey]
     $parentheticalParts.Add((Get-NormalCitationPartDisplayText -Item $item -Prefix $part.Prefix -Suffix $part.Suffix))
     $citationItems += (New-CitationItemPayload -Item $item -Prefix $part.Prefix -Suffix $part.Suffix)
+    $convertedCitekeys.Add($part.Citekey)
   }
 
   $visibleText = if ($narrativeAuthorText) {
@@ -609,6 +664,7 @@ function Convert-MixedCitationMarkerToFieldXml {
     "(" + ($parentheticalParts -join "; ") + ")"
   }
 
+  Register-ConvertedCitekeys -Citekeys $convertedCitekeys.ToArray()
   return New-CitationFieldXml -VisibleText $visibleText -CitationItems $citationItems
 }
 
@@ -640,81 +696,88 @@ function Remove-ExistingOutputDocx {
   }
 }
 
-$cwd = Get-Location
-$inputDocxPath = if ([System.IO.Path]::IsPathRooted($InputDocx)) { $InputDocx } else { Join-Path $cwd $InputDocx }
-$outputDocxPath = if ([System.IO.Path]::IsPathRooted($OutputDocx)) { $OutputDocx } else { Join-Path $cwd $OutputDocx }
-$workDir = Join-Path $env:TEMP ("docx-zotero-" + [guid]::NewGuid().ToString())
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-
-if ($GenerateDocxFirst) {
-  if (-not $InputMarkdown) {
-    throw "InputMarkdown is required when -GenerateDocxFirst is used"
-  }
-
-  Ensure-ParentDirectory -Path $inputDocxPath
-  $pandocArgs = @($InputMarkdown, "-o", $InputDocx)
-  if ($ReferenceDocx) {
-    $pandocArgs += @("--reference-doc", $ReferenceDocx)
-  }
-
-  & pandoc @pandocArgs
-  if ($LASTEXITCODE -ne 0) {
-    throw "pandoc failed while generating the intermediate docx"
-  }
-}
-
-if (-not (Test-Path -LiteralPath $inputDocxPath)) {
-  throw "Input docx not found: $inputDocxPath"
-}
-
-if (Test-Path -LiteralPath $workDir) {
-  Remove-Item -LiteralPath $workDir -Recurse -Force
-}
-
 try {
-  Copy-Item -LiteralPath $inputDocxPath -Destination ($inputDocxPath + ".zip") -Force
-  Expand-Archive -LiteralPath ($inputDocxPath + ".zip") -DestinationPath $workDir -Force
-  Remove-Item -LiteralPath ($inputDocxPath + ".zip") -Force
+  $cwd = Get-Location
+  $inputDocxPath = if ([System.IO.Path]::IsPathRooted($InputDocx)) { $InputDocx } else { Join-Path $cwd $InputDocx }
+  $outputDocxPath = if ([System.IO.Path]::IsPathRooted($OutputDocx)) { $OutputDocx } else { Join-Path $cwd $OutputDocx }
+  $workDir = Join-Path $env:TEMP ("docx-zotero-" + [guid]::NewGuid().ToString())
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
-  $documentXmlPath = Join-Path $workDir "word/document.xml"
-  $documentXml = [System.IO.File]::ReadAllText((Resolve-Path $documentXmlPath), $utf8NoBom)
-  $citekeys = @(Get-CitationKeysFromXml -DocumentXml $documentXml)
+  if ($GenerateDocxFirst) {
+    if (-not $InputMarkdown) {
+      throw "InputMarkdown is required when -GenerateDocxFirst is used"
+    }
 
-  if ($citekeys.Count -eq 0) {
-    throw "No citation markers like [@citekey] were found in word/document.xml"
+    Ensure-ParentDirectory -Path $inputDocxPath
+    $pandocArgs = @($InputMarkdown, "-o", $InputDocx)
+    if ($ReferenceDocx) {
+      $pandocArgs += @("--reference-doc", $ReferenceDocx)
+    }
+
+    & pandoc @pandocArgs
+    if ($LASTEXITCODE -ne 0) {
+      throw "pandoc failed while generating the intermediate docx"
+    }
   }
 
-  $citationMap = Get-CitationMap -Citekeys $citekeys
-
-  $updatedXml = Replace-CitationRunsInDocumentXml -DocumentXml $documentXml -CitationMap $citationMap
-  $missingCitekeys = @($script:MissingCitekeys | Sort-Object)
-  $hasMissingCitekeys = $missingCitekeys.Count -gt 0
-
-  if ($updatedXml -eq $documentXml -and -not $hasMissingCitekeys) {
-    throw "Citation markers were found but no replacements were applied"
+  if (-not (Test-Path -LiteralPath $inputDocxPath)) {
+    throw "Input docx not found: $inputDocxPath"
   }
 
-  [System.IO.File]::WriteAllText((Resolve-Path $documentXmlPath), $updatedXml, $utf8NoBom)
-
-  Remove-ExistingOutputDocx -Path $outputDocxPath
-
-  Compress-Archive -Path (Join-Path $workDir "*") -DestinationPath ($outputDocxPath + ".zip") -Force
-  Move-Item -LiteralPath ($outputDocxPath + ".zip") -Destination $outputDocxPath -Force
-
-  if ($hasMissingCitekeys) {
-    $warningMessage = @(
-      "Some citekeys were not found in Better BibTeX and were left unchanged in the output document.",
-      "Missing citekeys:",
-      ($missingCitekeys | ForEach-Object { " - $_" })
-    ) -join [Environment]::NewLine
-    Write-Warning $warningMessage
-  }
-}
-finally {
-  if (Test-Path -LiteralPath ($inputDocxPath + ".zip")) {
-    Remove-Item -LiteralPath ($inputDocxPath + ".zip") -Force
-  }
   if (Test-Path -LiteralPath $workDir) {
     Remove-Item -LiteralPath $workDir -Recurse -Force
   }
+
+  try {
+    Copy-Item -LiteralPath $inputDocxPath -Destination ($inputDocxPath + ".zip") -Force
+    Expand-Archive -LiteralPath ($inputDocxPath + ".zip") -DestinationPath $workDir -Force
+    Remove-Item -LiteralPath ($inputDocxPath + ".zip") -Force
+
+    $documentXmlPath = Join-Path $workDir "word/document.xml"
+    $documentXml = [System.IO.File]::ReadAllText((Resolve-Path $documentXmlPath), $utf8NoBom)
+    $citekeys = @(Get-CitationKeysFromXml -DocumentXml $documentXml)
+
+    if ($citekeys.Count -eq 0) {
+      throw "No citation markers like [@citekey] were found in word/document.xml"
+    }
+
+    $citationMap = Get-CitationMap -Citekeys $citekeys
+
+    $updatedXml = Replace-CitationRunsInDocumentXml -DocumentXml $documentXml -CitationMap $citationMap
+    $missingCitekeys = @($script:MissingCitekeys | Sort-Object)
+    $hasMissingCitekeys = $missingCitekeys.Count -gt 0
+
+    if ($updatedXml -eq $documentXml -and -not $hasMissingCitekeys) {
+      throw "Citation markers were found but no replacements were applied"
+    }
+
+    [System.IO.File]::WriteAllText((Resolve-Path $documentXmlPath), $updatedXml, $utf8NoBom)
+
+    Remove-ExistingOutputDocx -Path $outputDocxPath
+
+    Compress-Archive -Path (Join-Path $workDir "*") -DestinationPath ($outputDocxPath + ".zip") -Force
+    Move-Item -LiteralPath ($outputDocxPath + ".zip") -Destination $outputDocxPath -Force
+
+    if ($hasMissingCitekeys) {
+      $countLabel = if ($missingCitekeys.Count -eq 1) { "citekey" } else { "citekeys" }
+      $missingSummary = $missingCitekeys -join ", "
+      Write-Output "Step 2 warning: $($missingCitekeys.Count) $countLabel not found in Better BibTeX -> $missingSummary"
+    }
+
+    Write-Output "Step 2 complete: Zotero field codes injected -> $outputDocxPath"
+    Write-Output "Converted $($script:ConvertedCitationKeyOccurrences) citation key occurrences."
+    Write-Output "Resolved $($script:ConvertedReferenceKeys.Count) unique references."
+  }
+  finally {
+    if (Test-Path -LiteralPath ($inputDocxPath + ".zip")) {
+      Remove-Item -LiteralPath ($inputDocxPath + ".zip") -Force
+    }
+    if (Test-Path -LiteralPath $workDir) {
+      Remove-Item -LiteralPath $workDir -Recurse -Force
+    }
+  }
+}
+catch {
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 1
 }
