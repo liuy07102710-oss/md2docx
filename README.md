@@ -1,139 +1,100 @@
 # md2docx
 
-**用 Markdown 去写论文怎么处理最后转换成word以及参考文献引用？**
+把 Markdown 论文转换成更接近期刊格式的 Word，并在需要时把文献引用注入为 Word-Zotero插件可识别和刷新的 Word 字段。
 
-## 要点：
+```text
+Markdown
+  ↓
+Pandoc 负责转换结构
+  ↓
+reference.docx 提供 Word 样式
+  ↓
+Lua 过滤器补充图题、表题等细节
+  ↓
+DOCX
+  ↓
+inject_zotero_fieldcode_poc.ps1 负责引用字段化被word-zotero插件接管
+  ↓
+DOCX
+```
 
-1. 让导出的 Word 样式尽量贴近中文期刊论文模板。
-2. **让 Markdown 里的引用关键词在 Word 中继续被 Zotero 插件识别和接管，方便后续阶段继续在 Word 里统一调整、刷新引用与更改参考文献格式。**
+## 快速使用
 
-### 1. 提供pandoc转换时的参考模板与Lua过滤器
+下面的命令默认在项目根目录执行。
 
-项目内置了一个参考模板 [templates/template_期刊论文.docx](templates/template_期刊论文.docx)，并通过 Lua 过滤器补充处理图题、表题、表格样式、字体颜色、行内代码等细节，使导出的 Word 更接近期刊写作习惯，而不是只得到一个“能打开”的通用 docx。
+### 方式一. 只做 Markdown 转 Word
 
-> 模板这部分主要参考这个开源项目[pandoc_docx_template](https://github.com/Achuan-2/pandoc_docx_template)，在此基础上只保留了md->docx，增加了两个Lua过滤器以及修改了一下word参考模板。
+```powershell
+python scripts/md2docx.py "tests/时间心理账户综述示例.md" -o "tests/时间心理账户_plain.docx"
+```
 
-### 2. 支持 Zotero 字段化，而不只是 CSL 排版
+这条命令适合：先把 Markdown 转成样式更可控的 Word，后续还要在 Word 中继续调格式，还没有处理文献引用。
 
-常见的 `Pandoc + CSL` 参考文献管理，会把引用直接渲染成 Word 中的普通文本。这样虽然能得到结果，但转换成word后一般会再次调整局部格式或内容，此时如果突然要更改参考文献，就又要重返md中更改，再重新转换成word与调整局部内容，比较麻烦。
+### 方式二. 直接用 CSL 生成参考文献
 
-本项目解决思路：
+```powershell
+pandoc "tests/时间心理账户综述示例.md" `
+  -o "tests/时间心理账户_CSL.docx" `
+  --from "markdown+raw_html" `
+  --citeproc `
+  --bibliography "tests/时间心理账户.bib" `
+  --csl "tests/china-national-standard-gb-t-7714-2015-numeric.csl" `
+  --reference-doc "templates/template_期刊论文.docx" `
+  --lua-filter "markdown-to-docx.lua"
+```
 
-- 先把 Markdown 转成普通 Word；
-- 再把其中的引用关键词注入为 Zotero 可识别的 Word field code。
+这条路线适合：直接得到带参考文献的 Word，生成后基本不再改引用，不需要在 Word 里继续让 Zotero 接管这些引用。
 
-这样生成的 docx 可以继续被 Zotero 插件识别和接管，更适合“Markdown 写作，Word 终稿”的论文场景。
+### 方式三. 引用注入为 Zotero 字段
 
-## 两种工作流的区别
+第一步，先生成普通 Word：
 
-| 方式 | 适合场景 | 引用在 Word 中的状态 |
-| --- | --- | --- |
-| `Pandoc + CSL` | 只想快速得到格式化参考文献 | 普通文本，便于查看，不便继续被 Zotero 接管 |
-| `Pondoc + 字段化脚本` | 终稿还要在 Word 里继续调整引用 | Zotero field code，可继续被 Zotero 插件识别和刷新 |
+```powershell
+python scripts/md2docx.py "tests/时间心理账户综述示例.md" -o "tests/时间心理账户_plain.docx"
+```
 
-用Pandoc+CSL的话还需要1个.bib参考文献加一个CSL样式文件，采用字段化注入脚本的话就不需要这两个文件，本地打开了Zotero并安装了Better BibTeX for Zotero插件即可。
+第二步，把 citekey 注入为 Zotero 字段：
 
-## 目录结构
+```powershell
+powershell -ExecutionPolicy Bypass -File "scripts/inject_zotero_fieldcode_poc.ps1" `
+  -InputDocx "tests/时间心理账户_plain.docx" `
+  -OutputDocx "tests/时间心理账户_fieldcoded.docx"
+```
 
-| 路径 | 说明 |
-| --- | --- |
-| [scripts/md2docx.py](scripts/md2docx.py) | 主转换脚本，负责 Markdown 转 docx |
-| [scripts/inject_zotero_fieldcode_poc.ps1](scripts/inject_zotero_fieldcode_poc.ps1) | 第二步字段化脚本，把引用关键词注入为 Zotero 字段 |
-| [markdown-to-docx.lua](markdown-to-docx.lua) | Lua 过滤器总入口 |
-| [lua/](lua) | 各个细粒度 Pandoc Lua 过滤器 |
-| [templates/template_期刊论文.docx](templates/template_期刊论文.docx) | 参考 Word 模板 |
-| [tests/时间心理账户综述示例.md](tests/时间心理账户综述示例.md) | 一个可直接用于测试两种工作流的示例 Markdown |
+这条路线适合：Markdown 完成主要写作，Word 用来做终稿，进入 Word 后使用zotero插件刷新引用、切换样式、插入参考文献列表。
+
+## 这个项目解决什么问题
+
+现在无论是网页 AI、桌面 Agent，还是 Obsidian、Typora 和 VS Code，Markdown 都是一种非常灵活的写作格式。但在中文学术写作，特别是社会科学期刊投稿中，最终往往还是要提交 Word。
+
+对于markdown-->word，大部分的做法是采用pandoc进行转换，但或多或少转换的不完美，主要存在两个方面问题，一是word模板的选择，二是文献引用的方式。
+
+针对第一方面，参考开源项目[pandoc_docx_template](https://github.com/Achuan-2/pandoc_docx_template)，在此基础上改动了一下，制作了[word模板](templates/template_期刊论文.docx)，并增加了几个lua过滤器。最后的效果在标题、正文、图片、表格、图题、表题、公式、代码块都贴近C刊的风格，且模板可根据具体期刊模板进行修改对应的样式（见下方语法样式对照表）。
+
+针对第二方面，一般做法是采用CSL参考文献样式文件+bib参考文献，并在md开头写上yaml标签，这种做法的缺点是后续要更改参考文献的话比较麻烦。本项目通过字段化注入，可以让转换后的 Word 文件里面的参考文献引用被 word-Zotero 插件识别并管理。
 
 ## 环境依赖
 
-### 基础依赖
+### 基础转换依赖
 
 - [Pandoc](https://pandoc.org/)
 - Python 3.10+
 - Python 包 `lxml`
 
-安装 `lxml`：
+### Zotero 字段化的额外依赖
 
-```powershell
-pip install lxml
-```
-
-### 使用 Zotero 字段化时的额外依赖
-
-- 打开了 Zotero
-- 安装了插件 Better BibTeX for Zotero
 - Windows PowerShell
+- 本机已打开 Zotero且已安装 Better BibTeX for Zotero
 
-第二步脚本当前通过 Better BibTeX 暴露的本地 JSON-RPC 接口工作，默认地址为：
+Better BibTeX 默认通过本地 JSON-RPC 接口提供文献查询：
 
 ```text
 http://127.0.0.1:23119/better-bibtex/json-rpc
 ```
 
-## 快速开始
-
-以下命令默认在 `tests` 文件夹中执行，也就是先进入：
-
-```powershell
-cd tests
-```
-
-### 1. 普通 Markdown 转 Word
-
-直接使用项目自带模板：
-
-```powershell
-python ../scripts/md2docx.py 时间心理账户综述示例.md -o 时间心理账户_plain.docx
-```
-
-如果需要显式指定模板：
-
-```powershell
-python ../scripts/md2docx.py 时间心理账户综述示例.md -o 时间心理账户_plain.docx --reference ../templates/template_期刊论文.docx
-```
-
-### 2. 使用 CSL 直接导出参考文献
-
-这条路线适合“直接得到格式化参考文献”的情况：
-
-```powershell
-pandoc 时间心理账户综述示例.md `
-  -o 时间心理账户_CSL.docx `
-  --from "markdown+raw_html" `
-  --citeproc `
-  --bibliography 时间心理账户.bib `
-  --csl china-national-standard-gb-t-7714-2015-numeric.csl `
-  --reference-doc ../templates/template_期刊论文.docx `
-  --lua-filter ../markdown-to-docx.lua
-```
-
-### 3. 使用 Zotero 字段化路线
-
-第一步，先生成普通 docx：
-
-```powershell
-python ../scripts/md2docx.py 时间心理账户综述示例.md -o 时间心理账户_plain.docx
-```
-
-第二步，把引用关键词注入为 Zotero 字段：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File ../scripts/inject_zotero_fieldcode_poc.ps1 `
-  -InputDocx 时间心理账户_plain.docx `
-  -OutputDocx 时间心理账户_fieldcoded.docx
-```
-
-成功后，脚本会输出：
-
-- 第一步是否完成；
-- 第二步是否完成；
-- 转换了多少个引用关键词；
-- 去重后识别了多少条参考文献；
-- 哪些 citekey 没有在 Better BibTeX 中找到。
-
 ## Markdown 中的引用写法
 
-字段化脚本目前主要识别以下几种写法：citekey的内容来自于Zotero中Better BibTeX for Zotero插件里生成的（这个可以设置）。
+字段化脚本当前主要识别以下几种写法：
 
 - `[@citekey]`
 - `[@A; @B]`
@@ -142,39 +103,48 @@ powershell -ExecutionPolicy Bypass -File ../scripts/inject_zotero_fieldcode_poc.
 
 示例可参考 [tests/时间心理账户综述示例.md](tests/时间心理账户综述示例.md)。
 
-## 支持的格式细节
 
-### Lua 过滤器
+## 目录结构
+
+| 路径                                                         | 说明                                      |
+| ------------------------------------------------------------ | ----------------------------------------- |
+| [scripts/md2docx.py](scripts/md2docx.py)                     | 主转换脚本，负责 Markdown 转 Word         |
+| [scripts/inject_zotero_fieldcode_poc.ps1](scripts/inject_zotero_fieldcode_poc.ps1) | 字段化脚本，把 citekey 注入为 Zotero 字段 |
+| [markdown-to-docx.lua](markdown-to-docx.lua)                 | Lua 过滤器总入口                          |
+| [lua/](lua)                                                  | 各个细粒度 Pandoc Lua 过滤器              |
+| [templates/template_期刊论文.docx](templates/template_期刊论文.docx) | 参考 Word 模板                            |
+| [tests/时间心理账户综述示例.md](tests/时间心理账户综述示例.md) | 演示用 Markdown 示例                      |
+| [tests/时间心理账户.bib](tests/时间心理账户.bib)             | CSL 路线使用的参考文献库                  |
+| [tests/china-national-standard-gb-t-7714-2015-numeric.csl](tests/china-national-standard-gb-t-7714-2015-numeric.csl) | CSL 样式文件                              |
+
+## Lua 过滤器
 
 [markdown-to-docx.lua](markdown-to-docx.lua) 是总入口文件，按顺序加载多个 Lua 过滤器。
 
-| 过滤器 | 作用 | 默认状态 |
-| --- | --- | --- |
-| `lua/paragraph-table-caption.lua` | 识别“表1 ...”单独段落，并把它转为紧邻表格的表题 | 开启 |
-| `lua/paragraph-image-caption.lua` | 识别图片下一行的“图1 ...”段落，并把它写入图片标题 | 开启 |
-| `lua/preserve_font_color.lua` | 尽量保留 Markdown / HTML 中的字体颜色 | 开启 |
-| `lua/image-title-to-caption.lua` | 把图片 `title` 转成 Word 图注 | 开启 |
-| `lua/add-inline-code.lua` | 让行内代码使用 `Inline Code` 样式 | 开启 |
+| 过滤器                            | 作用                                              | 默认状态 |
+| --------------------------------- | ------------------------------------------------- | -------- |
+| `lua/paragraph-table-caption.lua` | 识别“表1 ...”单独段落，并把它转为紧邻表格的表题   | 开启     |
+| `lua/paragraph-image-caption.lua` | 识别图片下一行的“图1 ...”段落，并把它写入图片标题 | 开启     |
+| `lua/preserve_font_color.lua`     | 尽量保留 Markdown / HTML 中的字体颜色             | 开启     |
+| `lua/image-title-to-caption.lua`  | 把图片 `title` 转成 Word 图注                     | 开启     |
+| `lua/add-inline-code.lua`         | 让行内代码使用 `Inline Code` 样式                 | 开启     |
 
-### Markdown 与 Word 样式的对应关系
+## Markdown语法 与 Word 样式的对应关系
 
-| Markdown / 结构 | Word 中对应样式 |
-| --- | --- |
-| 普通正文段落 | `Body Text` / `First Paragraph` |
-| `#` 到 `######` | `Heading 1` 到 `Heading 6` |
-| `表1 ...` + 紧邻表格 | `TableCaption` |
-| Markdown 表格 / HTML 表格 | `Table` |
-| 表格单元格文字 | `Compact` |
-| 图片 | `Captioned Figure` |
-| 图片 `title` 或“图1 ...”图注 | `Image Caption` |
-| 引用块 `>` | `Block Text` |
-| 代码块 | `Source Code` |
-| 行内代码 ``code`` | `Inline Code` |
+| Markdown                             | Word 中对应样式                 |
+| ------------------------------------ | ------------------------------- |
+| 普通正文段落                         | `Body Text` / `First Paragraph` |
+| `#` 到 `######`                      | `Heading 1` 到 `Heading 6`      |
+| `表1 ...` + 紧邻表格(表题)           | `TableCaption`                  |
+| Markdown 表格 / HTML 表格            | `Table`                         |
+| 表格单元格文字                       | `Compact`                       |
+| 图片                                 | `Captioned Figure`              |
+| 图片 `title` 或“图1 ...”图注（图题） | `Image Caption`                 |
+| 引用块 `>`                           | `Block Text`                    |
+| 代码块                               | `Source Code`                   |
+| 行内代码 ``code``                    | `Inline Code`                   |
 
-## 适合谁
 
-这个项目特别适合：
+## 致谢
 
-- 用 Markdown 写中文社科论文的人；
-- 想把 Pandoc 输出尽量贴近 Word 模板的人；
-- 想在 Word 终稿阶段继续使用 Zotero 插件刷新引用的人。
+模板部分主要参考开源项目 [pandoc_docx_template](https://github.com/Achuan-2/pandoc_docx_template)，本项目在此基础上保留了 Markdown 到 Word 的工作流，并补充了图表题、表格样式和 Zotero 字段化处理。

@@ -808,14 +808,19 @@ try {
     }
 
     Ensure-ParentDirectory -Path $inputDocxPath
-    $pandocArgs = @($InputMarkdown, "-o", $InputDocx)
-    if ($ReferenceDocx) {
-      $pandocArgs += @("--reference-doc", $ReferenceDocx)
+    $converterScript = Join-Path $PSScriptRoot "md2docx.py"
+    if (-not (Test-Path -LiteralPath $converterScript)) {
+      throw "md2docx.py not found next to inject_zotero_fieldcode_poc.ps1"
     }
 
-    & pandoc @pandocArgs
+    $pandocArgs = @($converterScript, $InputMarkdown, "-o", $InputDocx)
+    if ($ReferenceDocx) {
+      $pandocArgs += @("--reference", $ReferenceDocx)
+    }
+
+    & python @pandocArgs
     if ($LASTEXITCODE -ne 0) {
-      throw "pandoc failed while generating the intermediate docx"
+      throw "md2docx.py failed while generating the intermediate docx"
     }
   }
 
