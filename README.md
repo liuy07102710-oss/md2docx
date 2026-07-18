@@ -20,7 +20,9 @@ DOCX
 
 ## 快速使用
 
-下面的命令默认在项目根目录执行。
+下面的命令默认在项目根目录执行。使用时可以将要转换的文件放到tests文件夹里并更改对应命令即可。
+
+[视频介绍](https://www.bilibili.com/video/BV1bUKF6wEPT/?spm_id_from=333.1387.homepage.video_card.click&vd_source=99f1f4cbd5c2d016da403ccccb1f09f6)
 
 ### 方式一. 只做 Markdown 转 Word
 
@@ -45,7 +47,7 @@ pandoc "tests/时间心理账户综述示例.md" `
 
 这条路线适合：直接得到带参考文献的 Word，生成后基本不再改引用，不需要在 Word 里继续让 Zotero 接管这些引用。
 
-### 方式三. 引用注入为 Zotero 字段
+### （推荐）方式三. 引用注入为 Zotero 字段
 
 第一步，先生成普通 Word：
 
@@ -77,7 +79,7 @@ powershell -ExecutionPolicy Bypass -File "scripts/inject_zotero_fieldcode_poc.ps
 
 ### 基础转换依赖
 
-- [Pandoc](https://pandoc.org/)
+- [Pandoc](https://pandoc.cn/installing.html)
 - Python 3.10+
 - Python 包 `lxml`
 
