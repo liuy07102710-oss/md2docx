@@ -23,6 +23,18 @@ local function make_caption_from_para(para)
   }
 end
 
+local function make_caption_from_paras(paras)
+  local caption_blocks = {}
+  for _, para in ipairs(paras) do
+    caption_blocks[#caption_blocks + 1] = pandoc.Plain(para.content)
+  end
+
+  return {
+    long = caption_blocks,
+    short = nil,
+  }
+end
+
 function Pandoc(doc)
   local blocks = doc.blocks
   local out = {}
@@ -33,14 +45,28 @@ function Pandoc(doc)
     local next_block = blocks[i + 1]
 
     if current
-      and next_block
       and current.t == "Para"
-      and next_block.t == "Table"
       and is_table_caption_text(stringify_inlines(current.content))
     then
-      next_block.caption = make_caption_from_para(current)
-      out[#out + 1] = next_block
-      i = i + 2
+      local caption_paras = { current }
+      local j = i + 1
+
+      while j <= #blocks
+        and blocks[j].t == "Para"
+        and is_table_caption_text(stringify_inlines(blocks[j].content))
+      do
+        caption_paras[#caption_paras + 1] = blocks[j]
+        j = j + 1
+      end
+
+      if j <= #blocks and blocks[j].t == "Table" then
+        blocks[j].caption = make_caption_from_paras(caption_paras)
+        out[#out + 1] = blocks[j]
+        i = j + 1
+      else
+        out[#out + 1] = current
+        i = i + 1
+      end
     else
       out[#out + 1] = current
       i = i + 1

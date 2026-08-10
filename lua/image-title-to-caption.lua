@@ -2,13 +2,60 @@
 -- https://github.com/Achuan-2/pandoc_word_template/blob/main/image-title-to-caption.lua
 -- 作用：pandoc默认把图片alt作为图片caption，改为将图片title设置为caption，并在只有alt文本时确保无caption
 
+local CAPTION_LINE_SEPARATOR = "<<<MD2DOCX_IMAGE_CAPTION_BREAK>>>"
+
+local function trim(text)
+    return text:gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function parse_caption_line(line)
+    local parsed = pandoc.read(line, "markdown")
+    local inlines = {}
+
+    for _, block in ipairs(parsed.blocks) do
+        if block.t == "Para" or block.t == "Plain" then
+            for _, inline in ipairs(block.content) do
+                inlines[#inlines + 1] = inline
+            end
+        end
+    end
+
+    return inlines
+end
+
 -- 创建caption的函数
 function create_caption(text)
     if text:find("^%s*$") then
-        return {}
-    else
-        return {pandoc.Str(text)}
+        return {
+            long = {},
+            short = nil,
+        }
     end
+
+    local caption_blocks = {}
+
+    local normalized_text = text:gsub(CAPTION_LINE_SEPARATOR, "\n")
+
+    for line in (normalized_text .. "\n"):gmatch("([^\n]*)\n") do
+        local trimmed = trim(line)
+        if trimmed ~= "" then
+            local inlines = parse_caption_line(trimmed)
+            caption_blocks[#caption_blocks + 1] = pandoc.Plain(inlines)
+        end
+    end
+
+    return {
+        long = caption_blocks,
+        short = nil,
+    }
+end
+
+local function get_image_caption_text(img)
+    local attrs = img.attributes or {}
+    if attrs["md2docx-caption"] and attrs["md2docx-caption"] ~= "" then
+        return attrs["md2docx-caption"]
+    end
+    return img.title or ""
 end
 
 -- 处理Para块
@@ -16,15 +63,19 @@ function Para(para)
     -- 检查段落是否只包含一个图片
     if #para.content == 1 and para.content[1].t == "Image" then
         local img = para.content[1]
+        local caption_text = get_image_caption_text(img)
         -- 如果图片有标题，将其包装为Figure并将标题设为caption
-        if img.title and img.title ~= "" then
+        if caption_text ~= "" then
             local content = {pandoc.Plain({img})}
-            local caption = create_caption(img.title)
+            local caption = create_caption(caption_text)
             return pandoc.Figure(content, caption)
         else
             -- 如果只有alt文本（无标题），也将其包装为Figure但不生成caption
             local content = {pandoc.Plain({img})}
-            local caption = {}
+            local caption = {
+                long = {},
+                short = nil,
+            }
             return pandoc.Figure(content, caption)
         end
     end
@@ -40,12 +91,16 @@ function Figure(fig)
             for j, inline in ipairs(block.content) do
                 if inline.t == "Image" then
                     local img = inline
+                    local caption_text = get_image_caption_text(img)
                     -- 如果图片有标题，将其设为Figure的caption
-                    if img.title and img.title ~= "" then
-                        fig.caption = create_caption(img.title)
+                    if caption_text ~= "" then
+                        fig.caption = create_caption(caption_text)
                     else
                         -- 如果无标题，确保Figure无caption
-                        fig.caption = {}
+                        fig.caption = {
+                            long = {},
+                            short = nil,
+                        }
                     end
                 end
             end

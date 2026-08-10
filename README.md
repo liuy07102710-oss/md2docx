@@ -52,7 +52,7 @@ pandoc "tests/时间心理账户综述示例.md" `
 第一步，先生成普通 Word：
 
 ```powershell
-python scripts/md2docx.py "tests/时间心理账户综述示例.md" -o "tests/时间心理账户_plain.docx"
+python scripts/md2docx.py "tests/时间心理账户综述示例.md" -o "tests/时间心理账户_plain.docx" (-r "模板引用路径"(不加默认提供模板))
 ```
 
 第二步，把 citekey 注入为 Zotero 字段：

@@ -3,8 +3,13 @@
 -- A later filter can then turn that title into the final figure caption.
 
 local function stringify_inlines(inlines)
-  return pandoc.utils.stringify(inlines or {}):gsub("^%s+", ""):gsub("%s+$", "")
+  local text = pandoc.utils.stringify(inlines or {})
+  text = text:gsub("^%s+", "")
+  text = text:gsub("%s+$", "")
+  return text
 end
+
+local CAPTION_LINE_SEPARATOR = "<<<MD2DOCX_IMAGE_CAPTION_BREAK>>>"
 
 local function is_image_caption_text(text)
   if text == "" then
@@ -15,6 +20,8 @@ local function is_image_caption_text(text)
       or text:match("^图%s*[%d一二三四五六七八九十百千]+$")
       or text:match("^Figure%s*[%dIVXLCivxlc]+[%s:：.、%-_].*")
       or text:match("^Figure%s*[%dIVXLCivxlc]+$")
+      or text:match("^Fig%.?%s*[%dIVXLCivxlc]+[%s:：.、%-_].*")
+      or text:match("^Fig%.?%s*[%dIVXLCivxlc]+$")
 end
 
 local function extract_single_image(block)
@@ -45,9 +52,20 @@ function Pandoc(doc)
       and next_block.t == "Para"
       and is_image_caption_text(stringify_inlines(next_block.content))
     then
-      image.title = stringify_inlines(next_block.content)
+      local caption_lines = { stringify_inlines(next_block.content) }
+      local j = i + 2
+
+      while j <= #blocks
+        and blocks[j].t == "Para"
+        and is_image_caption_text(stringify_inlines(blocks[j].content))
+      do
+        caption_lines[#caption_lines + 1] = stringify_inlines(blocks[j].content)
+        j = j + 1
+      end
+
+      image.attributes["md2docx-caption"] = table.concat(caption_lines, CAPTION_LINE_SEPARATOR)
       out[#out + 1] = current
-      i = i + 2
+      i = j
     else
       out[#out + 1] = current
       i = i + 1
