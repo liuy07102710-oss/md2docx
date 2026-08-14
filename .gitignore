@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 生成的文档产物（可由 md2docx.py / pandoc 重新生成）
+tests/*.docx
+tests/*.html
+
+# 测试辅助产物
+tests/_*.docx
+tests/_*.md
+tests/_*.py
+tests/mock_bbt_server.py
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -95,6 +95,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Convert directly from Markdown to DOCX without the Markdown -> HTML pass",
     )
+    parser.add_argument(
+        "--citeproc",
+        action="store_true",
+        help="Render citations with pandoc-citeproc (requires --bibliography; --csl optional). "
+        "Applied on the Markdown -> HTML pass so raw HTML tables survive the conversion.",
+    )
+    parser.add_argument(
+        "--bibliography",
+        default=None,
+        help="Path to the bibliography file (BibTeX/BibLaTeX/CSL-JSON). Also resolves relative to the project root.",
+    )
+    parser.add_argument(
+        "--csl",
+        default=None,
+        help="Path to the CSL style file. Also resolves relative to the project root.",
+    )
     return parser
 
 
@@ -119,6 +135,23 @@ def main(argv: list[str]) -> int:
         print(f"Lua filter not found: {lua_filter_path}", file=sys.stderr)
         return 1
 
+    citation_args: list[str] = []
+    if args.citeproc:
+        if not args.bibliography:
+            print("--citeproc requires --bibliography", file=sys.stderr)
+            return 1
+        bibliography_path = resolve_resource(args.bibliography)
+        if not bibliography_path.is_file():
+            print(f"Bibliography file not found: {bibliography_path}", file=sys.stderr)
+            return 1
+        citation_args = ["--citeproc", "--bibliography", str(bibliography_path)]
+        if args.csl:
+            csl_path = resolve_resource(args.csl)
+            if not csl_path.is_file():
+                print(f"CSL file not found: {csl_path}", file=sys.stderr)
+                return 1
+            citation_args += ["--csl", str(csl_path)]
+
     if args.direct:
         run(
             [
@@ -134,6 +167,7 @@ def main(argv: list[str]) -> int:
                 str(lua_filter_path),
                 "--resource-path",
                 str(resource_path),
+                *citation_args,
                 *extra_args,
             ]
         )
@@ -149,6 +183,7 @@ def main(argv: list[str]) -> int:
                 "--mathml",
                 "--resource-path",
                 str(resource_path),
+                *citation_args,
             ],
             capture_stdout=True,
         ).stdout

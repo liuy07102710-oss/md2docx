@@ -35,25 +35,28 @@ python scripts/md2docx.py "tests/时间心理账户综述示例.md" -o "tests/�
 ### 方式二. 直接用 CSL 生成参考文献
 
 ```powershell
-pandoc "tests/时间心理账户综述示例.md" `
+python scripts/md2docx.py "tests/时间心理账户综述示例.md" `
   -o "tests/时间心理账户_CSL.docx" `
-  --from "markdown+raw_html" `
   --citeproc `
   --bibliography "tests/时间心理账户.bib" `
-  --csl "tests/china-national-standard-gb-t-7714-2015-numeric.csl" `
-  --reference-doc "templates/template_期刊论文.docx" `
-  --lua-filter "markdown-to-docx.lua"
+  --csl "tests/china-national-standard-gb-t-7714-2015-numeric.csl"
 ```
 
 这条路线适合：直接得到带参考文献的 Word，生成后基本不再改引用，不需要在 Word 里继续让 Zotero 接管这些引用。
+
+> 注意：`--citeproc` 走的是 Markdown → HTML → DOCX 的两段式转换（与方式一相同）。
+> 不要在默认两段式模式下用 `--` 透传 `--citeproc`——那样 `--citeproc` 只会作用在第二段（HTML → DOCX），而引用标记在 HTML 里只是普通文本，不会被渲染。
+> 如果必须用原生 pandoc 命令，请先 `-t html5` 再 `-f html -o` 分两段执行；直接 `-f markdown+raw_html -o out.docx` 一段式转换时，Markdown 里的原始 HTML 表格会被展平成普通段落。
 
 ### （推荐）方式三. 引用注入为 Zotero 字段
 
 第一步，先生成普通 Word：
 
 ```powershell
-python scripts/md2docx.py "tests/时间心理账户综述示例.md" -o "tests/时间心理账户_plain.docx" (-r "模板引用路径"(不加默认提供模板))
+python scripts/md2docx.py "tests/时间心理账户综述示例.md" -o "tests/时间心理账户_plain.docx" -r "模板引用路径"
 ```
+
+`-r` 用于指定 Word 模板路径，不加则使用项目自带的默认模板 `templates/template_期刊论文.docx`。
 
 第二步，把 citekey 注入为 Zotero 字段：
 
@@ -64,6 +67,20 @@ powershell -ExecutionPolicy Bypass -File "scripts/inject_zotero_fieldcode_poc.ps
 ```
 
 这条路线适合：Markdown 完成主要写作，Word 用来做终稿，进入 Word 后使用zotero插件刷新引用、切换样式、插入参考文献列表。
+
+## md2docx.py 常用参数
+
+| 参数 | 说明 |
+| ---- | ---- |
+| `-o, --output` | 输出 DOCX 路径，默认 `输入名.docx` |
+| `-r, --reference` | 参考模板 DOCX，默认 `templates/template_期刊论文.docx` |
+| `-f, --filter` | Lua 过滤器，默认 `markdown-to-docx.lua` |
+| `--from` | Pandoc 输入格式，默认 `markdown` |
+| `--direct` | 跳过 HTML 中间步骤，直接 Markdown → DOCX（速度更快；公式可直接转换，但原始 HTML 表格会被展平，含 HTML 表格的文档请用默认两段式） |
+| `--citeproc` | 启用文献引用渲染（方式二） |
+| `--bibliography` | 参考文献库路径（配合 `--citeproc`，也可省略扩展名/目录前缀自动查找） |
+| `--csl` | CSL 样式文件路径（配合 `--citeproc`，可选） |
+| `--` 之后的参数 | 原样透传给第二段 Pandoc 调用（如 `-- --toc`） |
 
 ## 这个项目解决什么问题
 
@@ -81,7 +98,7 @@ powershell -ExecutionPolicy Bypass -File "scripts/inject_zotero_fieldcode_poc.ps
 
 - [Pandoc](https://pandoc.cn/installing.html)
 - Python 3.10+
-- Python 包 `lxml`
+- Python 包 `lxml`：`pip install -r requirements.txt`
 
 ### Zotero 字段化的额外依赖
 
@@ -93,6 +110,8 @@ Better BibTeX 默认通过本地 JSON-RPC 接口提供文献查询：
 ```text
 http://127.0.0.1:23119/better-bibtex/json-rpc
 ```
+
+接口地址可用环境变量 `MD2DOCX_BBT_ENDPOINT` 覆盖（例如指向代理或测试用的模拟服务）。
 
 ## Markdown 中的引用写法
 
@@ -110,8 +129,9 @@ http://127.0.0.1:23119/better-bibtex/json-rpc
 
 | 路径                                                         | 说明                                      |
 | ------------------------------------------------------------ | ----------------------------------------- |
-| [scripts/md2docx.py](scripts/md2docx.py)                     | 主转换脚本，负责 Markdown 转 Word         |
+| [scripts/md2docx.py](scripts/md2docx.py)                     | 主转换脚本，负责 Markdown 转 Word（含 CSL 引用渲染） |
 | [scripts/inject_zotero_fieldcode_poc.ps1](scripts/inject_zotero_fieldcode_poc.ps1) | 字段化脚本，把 citekey 注入为 Zotero 字段 |
+| [scripts/normalize_table_cell_styles.py](scripts/normalize_table_cell_styles.py) | 表格单元格段落样式归一化（md2docx.py 自动调用） |
 | [markdown-to-docx.lua](markdown-to-docx.lua)                 | Lua 过滤器总入口                          |
 | [lua/](lua)                                                  | 各个细粒度 Pandoc Lua 过滤器              |
 | [templates/template_期刊论文.docx](templates/template_期刊论文.docx) | 参考 Word 模板                            |

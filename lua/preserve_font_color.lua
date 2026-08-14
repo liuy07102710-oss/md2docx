@@ -12,12 +12,12 @@ function Span(el)
     }
     if named[lower] then return named[lower] end
 
-    -- 6-digit hex
-    local hex6 = s:match("#?(%x%x%x%x%x%x)")
+    -- 6-digit hex（必须锚定首尾，避免误匹配 rgb() 内的数字片段，如 "rgb(0,128,255)" 中的 "128"）
+    local hex6 = s:match("^#?(%x%x%x%x%x%x)$")
     if hex6 then return hex6:upper() end
 
     -- 3-digit hex (#rgb -> rrggbb)
-    local hex3 = s:match("#?(%x%x%x)")
+    local hex3 = s:match("^#?(%x%x%x)$")
     if hex3 then
       local r = hex3:sub(1,1)
       local g = hex3:sub(2,2)

@@ -9,8 +9,8 @@
 #>
 
 param(
-  [string]$InputDocx = "zotero-fieldcode/sample-zotero-full-plain.docx",
-  [string]$OutputDocx = "zotero-fieldcode/sample-zotero-full-fieldcoded.docx",
+  [string]$InputDocx,
+  [string]$OutputDocx,
   [string]$InputMarkdown = "",
   [string]$ReferenceDocx = "",
   [switch]$GenerateDocxFirst
@@ -797,6 +797,12 @@ function Remove-ExistingOutputDocx {
 
 try {
   $cwd = Get-Location
+  if (-not $InputDocx) {
+    throw "InputDocx is required. Example: -InputDocx tests/时间心理账户_plain.docx -OutputDocx tests/时间心理账户_fieldcoded.docx"
+  }
+  if (-not $OutputDocx) {
+    throw "OutputDocx is required. Example: -InputDocx tests/时间心理账户_plain.docx -OutputDocx tests/时间心理账户_fieldcoded.docx"
+  }
   $inputDocxPath = if ([System.IO.Path]::IsPathRooted($InputDocx)) { $InputDocx } else { Join-Path $cwd $InputDocx }
   $outputDocxPath = if ([System.IO.Path]::IsPathRooted($OutputDocx)) { $OutputDocx } else { Join-Path $cwd $OutputDocx }
   $workDir = Join-Path $env:TEMP ("docx-zotero-" + [guid]::NewGuid().ToString())
